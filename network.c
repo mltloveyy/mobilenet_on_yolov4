@@ -184,6 +184,8 @@ char *get_layer_string(LAYER_TYPE a)
     switch(a){
         case CONVOLUTIONAL:
             return "convolutional";
+        case DEPTHWISE_CONVOLUTIONAL: // depthwise convolutional
+            return "depthwise_convolutional";
         case ACTIVE:
             return "activation";
         case LOCAL:
@@ -544,8 +546,9 @@ int resize_network(network *net, int w, int h)
         //printf(" (resize %d: layer = %d) , ", i, l.type);
         if(l.type == CONVOLUTIONAL){
             resize_convolutional_layer(&l, w, h);
-        }
-        else if (l.type == CRNN) {
+        }else if (l.type == DEPTHWISE_CONVOLUTIONAL) { // depthwise convolutional
+            resize_depthwise_convolutional_layer(&l, w, h);
+        }else if (l.type == CRNN) {
             resize_crnn_layer(&l, w, h);
         }else if (l.type == CONV_LSTM) {
             resize_conv_lstm_layer(&l, w, h);

@@ -63,7 +63,7 @@ LAYER_TYPE string_to_layer_type(char * type)
     if (strcmp(type, "[local]")==0) return LOCAL;
     if (strcmp(type, "[conv]")==0
             || strcmp(type, "[convolutional]")==0) return CONVOLUTIONAL;
-    if (strcmp(type, "[depthwise_convolutional]") == 0) return DEPTHWISE_CONVOLUTIONAL;  // depthwise convolutional
+    if (strcmp(type, "[dwconv]")==0 || strcmp(type, "[depthwise_convolutional]") == 0) return DEPTHWISE_CONVOLUTIONAL;  // depthwise convolutional
     if (strcmp(type, "[activation]")==0) return ACTIVE;
     if (strcmp(type, "[net]")==0
             || strcmp(type, "[network]")==0) return NETWORK;
@@ -381,17 +381,17 @@ connected_layer parse_connected(list *options, size_params params)
 
 softmax_layer parse_softmax(list *options, size_params params)
 {
-	int groups = option_find_int_quiet(options, "groups", 1);
-	softmax_layer layer = make_softmax_layer(params.batch, params.inputs, groups);
-	layer.temperature = option_find_float_quiet(options, "temperature", 1);
-	char *tree_file = option_find_str(options, "tree", 0);
-	if (tree_file) layer.softmax_tree = read_tree(tree_file);
-	layer.w = params.w;
-	layer.h = params.h;
-	layer.c = params.c;
-	layer.spatial = option_find_float_quiet(options, "spatial", 0);
-	layer.noloss = option_find_int_quiet(options, "noloss", 0);
-	return layer;
+    int groups = option_find_int_quiet(options, "groups", 1);
+    softmax_layer layer = make_softmax_layer(params.batch, params.inputs, groups);
+    layer.temperature = option_find_float_quiet(options, "temperature", 1);
+    char *tree_file = option_find_str(options, "tree", 0);
+    if (tree_file) layer.softmax_tree = read_tree(tree_file);
+    layer.w = params.w;
+    layer.h = params.h;
+    layer.c = params.c;
+    layer.spatial = option_find_float_quiet(options, "spatial", 0);
+    layer.noloss = option_find_int_quiet(options, "noloss", 0);
+    return layer;
 }
 
 contrastive_layer parse_contrastive(list *options, size_params params)
@@ -1858,6 +1858,24 @@ void save_convolutional_weights(layer l, FILE *fp)
     //}
 }
 
+// depthwise convolutional
+void save_depthwise_convolutional_weights(layer l, FILE *fp)
+{
+#ifdef GPU
+    if (gpu_index >= 0) {
+        pull_depthwise_convolutional_layer(l);
+    }
+#endif
+    int num = l.n*l.size*l.size;
+    fwrite(l.biases, sizeof(float), l.n, fp);
+    if (l.batch_normalize) {
+        fwrite(l.scales, sizeof(float), l.n, fp);
+        fwrite(l.rolling_mean, sizeof(float), l.n, fp);
+        fwrite(l.rolling_variance, sizeof(float), l.n, fp);
+    }
+    fwrite(l.weights, sizeof(float), num, fp);
+}
+
 void save_batchnorm_weights(layer l, FILE *fp)
 {
 #ifdef GPU
@@ -1912,6 +1930,8 @@ void save_weights_upto(network net, char *filename, int cutoff)
         layer l = net.layers[i];
         if (l.type == CONVOLUTIONAL && l.share_layer == NULL) {
             save_convolutional_weights(l, fp);
+        } if (l.type == DEPTHWISE_CONVOLUTIONAL) {
+            save_depthwise_convolutional_weights(l, fp);
         } if (l.type == SHORTCUT && l.nweights > 0) {
             save_shortcut_weights(l, fp);
         } if(l.type == CONNECTED){
@@ -2109,6 +2129,42 @@ void load_convolutional_weights(layer l, FILE *fp)
 #endif
 }
 
+// depthwise convolutional
+void load_depthwise_convolutional_weights(layer l, FILE *fp)
+{
+    int num = l.n*l.size*l.size;
+    fread(l.biases, sizeof(float), l.n, fp);
+    if (l.batch_normalize && (!l.dontloadscales)) {
+        fread(l.scales, sizeof(float), l.n, fp);
+        fread(l.rolling_mean, sizeof(float), l.n, fp);
+        fread(l.rolling_variance, sizeof(float), l.n, fp);
+        if (0) {
+            int i;
+            for (i = 0; i < l.n; ++i) {
+                printf("%g, ", l.rolling_mean[i]);
+            }
+            printf("\n");
+            for (i = 0; i < l.n; ++i) {
+                printf("%g, ", l.rolling_variance[i]);
+            }
+            printf("\n");
+        }
+        if (0) {
+            fill_cpu(l.n, 0, l.rolling_mean, 1);
+            fill_cpu(l.n, 0, l.rolling_variance, 1);
+        }
+    }
+    fread(l.weights, sizeof(float), num, fp);
+ 
+    if (l.flipped) {
+        //transpose_matrix(l.weights, l.c*l.size*l.size, l.n);//hjimce
+    }
+#ifdef GPU
+    if (gpu_index >= 0) {
+        push_depthwise_convolutional_layer(l);
+    }
+#endif
+
 void load_shortcut_weights(layer l, FILE *fp)
 {
     int num = l.nweights;
@@ -2164,6 +2220,9 @@ void load_weights_upto(network *net, char *filename, int cutoff)
         if (l.dontload) continue;
         if(l.type == CONVOLUTIONAL && l.share_layer == NULL){
             load_convolutional_weights(l, fp);
+        }
+        if(l.type == DEPTHWISE_CONVOLUTIONAL){ // depthwise convolutional
+            load_depthwise_convolutional_weights(l, fp);
         }
         if (l.type == SHORTCUT && l.nweights > 0) {
             load_shortcut_weights(l, fp);
